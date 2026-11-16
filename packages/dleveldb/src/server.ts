@@ -346,6 +346,20 @@ export async function dispatchRpc(db: DLevelDB, req: BufferedRequest, res: Serve
       sendJson(res, 200, await db.scanLocalReplicas(body.vnodeIds ?? [], body));
       return true;
     }
+    if (pathname === '/stats' && method === 'GET') {
+      sendJson(res, 200, db.stats());
+      return true;
+    }
+    if (pathname === '/flush' && method === 'POST') {
+      await db.flush();
+      sendJson(res, 200, { ok: true, stats: db.stats() });
+      return true;
+    }
+    if (pathname === '/compact' && method === 'POST') {
+      await db.compact();
+      sendJson(res, 200, { ok: true, stats: db.stats() });
+      return true;
+    }
 
     sendJson(res, 404, { error: 'not found' });
     return true;

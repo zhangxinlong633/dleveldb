@@ -1,69 +1,31 @@
 {
-  "name": "dleveldb",
-  "version": "0.1.0",
-  "description": "Distributed LevelDB: sharded, Chord-routed KV with default 3 replicas",
-  "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "bin": {
-    "dleveldb": "./dist/cli.js"
+  "name": "dleveldb-workspace",
+  "private": true,
+  "description": "Distributed LevelDB workspace: core KV, Nest API, and Next.js console",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=26.0.0",
+    "pnpm": ">=9.0.0"
   },
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.js"
-    },
-    "./hash": {
-      "types": "./dist/hash.d.ts",
-      "import": "./dist/hash.js"
-    },
-    "./chord": {
-      "types": "./dist/chord.d.ts",
-      "import": "./dist/chord.js"
-    },
-    "./config": {
-      "types": "./dist/config.d.ts",
-      "import": "./dist/config.js"
-    }
-  },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE",
-    "docs"
-  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "dev": "tsc -p tsconfig.json --watch",
-    "start": "node dist/cli.js",
-    "test": "npm run test:chord && npm run test:shards && npm run test:replicas",
-    "test:chord": "node scripts/test-chord.mjs",
-    "test:shards": "node scripts/test-shards.mjs",
-    "test:replicas": "node scripts/test-replicas.mjs",
-    "prepublishOnly": "npm run build"
+    "dev": "pnpm -r --parallel dev",
+    "dev:api": "pnpm --filter @dleveldb/api dev",
+    "dev:web": "pnpm --filter @dleveldb/web dev",
+    "build": "pnpm --filter dleveldb build && pnpm --filter @dleveldb/api build && pnpm --filter @dleveldb/web build",
+    "typecheck": "pnpm -r typecheck",
+    "clean": "pnpm -r exec rm -rf dist .next node_modules/.cache",
+    "start": "pnpm --filter dleveldb start",
+    "test": "pnpm --filter dleveldb test",
+    "test:chord": "pnpm --filter dleveldb test:chord",
+    "test:shards": "pnpm --filter dleveldb test:shards",
+    "test:replicas": "pnpm --filter dleveldb test:replicas"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/zhangxinlong633/dleveldb.git"
   },
-  "keywords": [
-    "leveldb",
-    "distributed",
-    "kv",
-    "chord",
-    "replication"
-  ],
-  "license": "MIT",
-  "engines": {
-    "node": ">=20"
-  },
-  "dependencies": {
-    "classic-level": "^3.0.0"
-  },
-  "devDependencies": {
-    "@types/node": "^24.10.0",
-    "typescript": "7.0.2"
-  }
+  "license": "MIT"
 }
