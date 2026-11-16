@@ -1,82 +1,84 @@
 # dleveldb
 
-分布式 LevelDB。这个仓库提供一个**标准的分布式 KV**：每台机器上可以开多个 LevelDB 分片，多台机器用 Chord 环连起来，按 key 定位，默认 3 副本。
+**English** | [中文](README.zh-CN.md)
 
-值就写在 LevelDB 里，不是 packed block，也不是对象存储。需要把小文件打进大 block 的系统（例如 s3dfs）应自己保留那一层，只把 dleveldb 当作索引或通用 KV 来用。
+Distributed LevelDB. This repository is a **standard distributed KV store**: each machine can run several LevelDB shards, machines are joined with a Chord ring, keys are located by hash, and the default replication factor is 3.
 
-## 这个仓库做什么
+Values are stored inside LevelDB itself. This is not a packed-block engine and not an object store. A system that packs small files into large blocks (for example s3dfs) should keep that layer itself and use dleveldb only as an index or general-purpose KV.
 
-单机 LevelDB 很稳，但只有一份数据、也没有跨机器路由。dleveldb 在它上面加了三件事情：
+## What this repository does
 
-1. **分片**：一台机器可以跑多个虚拟节点，目录名是 `{nodeId}-{seq}`，每个虚拟节点是一份独立的标准 LevelDB。
-2. **定位**：用 Chord DHT 把所有虚拟节点排在 160 位环上。写入、读取都先算 `SHA-1(key)`，再找后继节点，不必全网广播。
-3. **副本**：默认把一份 key 放到 3 台不同的物理机上，写法定人数 W 默认是多数。单机部署时有效副本数自动变成 1，行为和本地 LevelDB 一样。
+Standalone LevelDB is reliable, but it holds a single copy and has no cross-machine routing. dleveldb adds three things on top:
 
-对外接口就是常见的 KV：`Put`、`Get`、`Delete`、按前缀扫描。
+1. **Sharding.** One machine can run several virtual nodes. Each vnode is a directory named `{nodeId}-{seq}` and is a separate, standard LevelDB.
+2. **Placement.** A Chord DHT places every vnode on a 160-bit ring. Puts and gets hash the key with SHA-1 and look up the successor, so they do not broadcast to the whole cluster.
+3. **Replication.** A key is stored on 3 different physical machines by default. The write quorum W defaults to a majority. On a single machine the effective replica count becomes 1, so behavior matches local LevelDB.
 
-## 仓库结构
+The API is ordinary KV: `Put`, `Get`, `Delete`, and prefix scan.
 
-这是一个 pnpm monorepo。安装依赖和编译用 **pnpm 9+**（需要 **Node.js 26+**）。**节点进程用 Bun 1.4+ 运行**。核心库可以直接执行 TypeScript；Nest API 会先用 tsc 编译（需要装饰器元数据），再用 bun 启动。控制台仍是 Next.js。
+## Repository layout
+
+This is a pnpm monorepo. Install and compile with **pnpm 9+** (requires **Node.js 26+**). **Node processes run on Bun 1.4+**. The core library can execute TypeScript directly; the Nest API is compiled with `tsc` first (decorator metadata is required) and then started with bun. The console is still Next.js.
 
 ```
 dleveldb/
-  packages/dleveldb   # 可独立使用的核心库（npm 包名 dleveldb）
-  apps/api            # NestJS 12 节点进程，对外提供 HTTP RPC
-  apps/web            # Next.js 16 控制台，查看集群、读写 key
-  docs/               # 架构与设计说明
+  packages/dleveldb   # standalone core library (npm package name: dleveldb)
+  apps/api            # NestJS 12 node process, HTTP RPC
+  apps/web            # Next.js 16 console for cluster status and KV operations
+  docs/               # architecture, design, and benchmark notes
 ```
 
-| 组件 | 作用 |
+| Package | Role |
 | --- | --- |
-| `packages/dleveldb` | 核心：本地 LevelDB、Chord、副本、HTTP RPC 实现 |
-| `apps/api` | 把核心库嵌进 Nest，监听端口，给其他节点和控制台调用 |
-| `apps/web` | 浏览器控制台：集群状态、Get/Put/Delete、前缀扫描 |
+| `packages/dleveldb` | Core: local LevelDB, Chord, replicas, HTTP RPC |
+| `apps/api` | Embeds the core library in Nest, listens on a port, serves other nodes and the console |
+| `apps/web` | Browser console: cluster status, Get / Put / Delete, prefix scan |
 
-更细的分层、读写路径和故障语义见 [docs/architecture.md](docs/architecture.md)，放置规则和 RPC 列表见 [docs/design.md](docs/design.md)。
+Layering, read/write paths, and failure semantics are in [docs/architecture.md](docs/architecture.md). Placement rules and the RPC list are in [docs/design.md](docs/design.md). Those two design docs are currently in Chinese.
 
-## 架构概览
+## Architecture overview
 
 ```mermaid
 flowchart TB
-  subgraph Client["调用方"]
-    App["应用或控制台"]
+  subgraph Client["Client"]
+    App["Application or console"]
   end
 
-  subgraph NodeA["物理节点 nodeA"]
+  subgraph NodeA["Physical node nodeA"]
     ApiA["Nest API :9000"]
     S0["LevelDB shards/nodeA-0"]
     S1["LevelDB shards/nodeA-1"]
-    R["LevelDB replicas/他人的 vnode"]
+    R["LevelDB replicas/other vnodes"]
     ApiA --> S0
     ApiA --> S1
     ApiA --> R
   end
 
-  subgraph NodeB["物理节点 nodeB"]
-    ApiB["Nest API :9001"]
+  subgraph NodeB["Physical node nodeB"]
+    ApiB["Nest API :9002"]
     SB["LevelDB shards/nodeB-0"]
     ApiB --> SB
   end
 
   App -->|Put / Get / Scan| ApiA
-  ApiA <-->|Chord + 副本 RPC| ApiB
+  ApiA <-->|Chord + replica RPC| ApiB
 ```
 
-一次写入大致是：
+A write looks like this:
 
-1. 计算 `SHA-1(utf8(key))`，在环上找到后继虚拟节点，这是**主副本**。
-2. 若主副本不在本机，就把请求转到对应节点。
-3. 主副本把 value 写入自己的 LevelDB，再复制到偏好列表里的其他物理机（默认最多 2 台）。
-4. 收到写法定人数（默认多数）的确认后，这次 Put 才算成功。
-5. 主副本如果连不上，写入失败，**不会**临时换一个主。这样可以避免两个节点同时以主身份接受写入。
+1. Compute `SHA-1(utf8(key))` and find the successor vnode on the ring. That vnode is the **primary**.
+2. If the primary is not local, the request is forwarded to that node.
+3. The primary writes the value into its own LevelDB, then copies it to the other machines on the preference list (at most two more, by default).
+4. The Put succeeds only after the write quorum (majority by default) has acknowledged it.
+5. If the primary is unreachable, the write fails. This version **does not** fail over to a temporary primary, so two nodes cannot both accept writes as primary.
 
-读取会先查本机所有主分片和副本库，没有再向其他节点询问。主节点宕机后，还活着的副本仍然可以读。
+Reads search every local primary shard and every local replica store first, then ask other nodes. After the primary dies, surviving replicas can still serve reads.
 
-前缀扫描是 **scatter-gather**：key 按哈希分散在环上，一般不能靠一次 LevelDB seek 扫完前缀（单机且只有一个虚拟节点时除外）。
+Prefix scan is **scatter-gather**: keys are placed by hash, so a prefix is usually not a single LevelDB seek (the exception is a single machine with a single vnode and no peers).
 
-## 快速开始
+## Quick start
 
-安装依赖并编译：
+Install and build:
 
 ```bash
 git clone https://github.com/zhangxinlong633/dleveldb.git
@@ -86,7 +88,7 @@ pnpm build
 pnpm test
 ```
 
-作为库使用：
+Use it as a library:
 
 ```ts
 import { DLevelDB, loadConfig } from 'dleveldb';
@@ -105,21 +107,21 @@ const listed = await db.scan({ prefix: 'logs/2026/', maxKeys: 100 });
 await db.close();
 ```
 
-启动一个带控制台的节点（API 由 Bun 运行）：
+Start a node with the console (the API runs on Bun):
 
 ```bash
-pnpm dev:api    # tsc watch + bun --watch，http://127.0.0.1:9000
+pnpm dev:api    # tsc watch + bun --watch, http://127.0.0.1:9000
 pnpm dev:web    # http://127.0.0.1:9001
 ```
 
-也可以只用核心库起一个节点进程：
+Or start a node from the core library only:
 
 ```bash
 DLEVELDB_DATA_DIR=./data DLEVELDB_NODE_ID=node1 DLEVELDB_PORT=9000 pnpm start
-# 等价于：bun packages/dleveldb/src/cli.ts
+# same as: bun packages/dleveldb/src/cli.ts
 ```
 
-第二台机器（或第二个进程）加入集群：
+Join a second machine (or a second process) to the cluster:
 
 ```bash
 DLEVELDB_DATA_DIR=./data-b \
@@ -127,63 +129,93 @@ DLEVELDB_NODE_ID=node2 \
 DLEVELDB_PORT=9002 \
 DLEVELDB_PEERS=127.0.0.1:9000 \
 pnpm --filter @dleveldb/api start
-# 等价于先编译再执行：bun apps/api/dist/main.js
+# same as building, then: bun apps/api/dist/main.js
 ```
 
-## 磁盘布局
+## On-disk layout
 
-每台机器一个数据目录：
+Each machine has one data directory:
 
 ```
 data/
-  shards/{nodeId}-{seq}/     # 本机作为主副本的 LevelDB
-  replicas/{owner-vnode}/    # 帮其他虚拟节点存放的副本 LevelDB
+  shards/{nodeId}-{seq}/     # LevelDB for vnodes this machine owns
+  replicas/{owner-vnode}/    # LevelDB replicas kept for other vnodes
 ```
 
-虚拟节点 id 是 `{nodeId}-{seq}`，它在环上的位置是 `SHA-1(utf8(`${nodeId}:${seq}`))`，哈希输入里的序号没有补零。key 的位置是 `SHA-1(utf8(key))` 的后继。
+A vnode id is `{nodeId}-{seq}`. Its ring position is `SHA-1(utf8(`${nodeId}:${seq}`))`; the sequence number is **not** zero-padded in the hash input. A key is placed at the successor of `SHA-1(utf8(key))`.
 
-偏好列表从主副本开始沿环走，在**不同物理机**上各取一个虚拟节点，直到凑满 N 份，或环上没有更多物理机。有效副本数是 `min(配置的 N, 当前物理机数)`。
+The preference list walks the ring from the primary and picks one vnode per **physical machine** until it has N copies, or until there are no more machines. Effective replica count is `min(configured N, current physical machines)`.
 
-LevelDB 里每个 value 带一个很小的信封（魔数 `DLKV`、CRC-32、mtime、长度），所以 `head()` 能返回元数据。没有信封的原始 LevelDB 值仍然可以读。
+Each LevelDB value is wrapped in a small envelope (magic `DLKV`, CRC-32, mtime, length) so `head()` can return metadata. Raw LevelDB values without an envelope are still readable.
 
-## 配置
+## Configuration
 
-环境变量以 `DLEVELDB_` 开头。为了方便和旧代码对接，也接受 `S3DFS_*` 别名。
+Environment variables use the `DLEVELDB_` prefix. `S3DFS_*` aliases are accepted for older callers.
 
-| 变量 | 默认 | 含义 |
+| Variable | Default | Meaning |
 | --- | --- | --- |
-| `DLEVELDB_DATA_DIR` | `./data` | 数据目录 |
-| `DLEVELDB_NODE_ID` | `node1` | 物理节点 id |
-| `DLEVELDB_PORT` | `9000` | 监听端口（没写 advertise 地址时用它） |
-| `DLEVELDB_ADVERTISE_ADDR` | `127.0.0.1:${PORT}` | 其他节点用来连本机的地址 |
-| `DLEVELDB_PEERS` | 空 | 种子节点，逗号分隔的 `host:port` |
-| `DLEVELDB_VNODES` | `1` | 本机虚拟节点个数 |
-| `DLEVELDB_REPLICAS` | `3` | 配置的副本数 N |
-| `DLEVELDB_WRITE_QUORUM` | 有效 N 的多数 | 写法定人数 W |
-| `DLEVELDB_SYNC` | `true` | 写入是否同步落盘 |
-| `DLEVELDB_STABILIZE_INTERVAL_MS` | `500` | Chord 稳定间隔 |
-| `DLEVELDB_RPC_TIMEOUT_MS` | `10000` | 节点间 RPC 超时 |
+| `DLEVELDB_DATA_DIR` | `./data` | Data directory |
+| `DLEVELDB_NODE_ID` | `node1` | Physical node id |
+| `DLEVELDB_PORT` | `9000` | Listen port (used when advertise address is not set) |
+| `DLEVELDB_ADVERTISE_ADDR` | `127.0.0.1:${PORT}` | Address other nodes use to reach this process |
+| `DLEVELDB_PEERS` | empty | Seed nodes, comma-separated `host:port` |
+| `DLEVELDB_VNODES` | `1` | Number of virtual nodes on this machine |
+| `DLEVELDB_REPLICAS` | `3` | Configured replica count N |
+| `DLEVELDB_WRITE_QUORUM` | majority of effective N | Write quorum W |
+| `DLEVELDB_SYNC` | `true` | Sync each write to disk |
+| `DLEVELDB_STABILIZE_INTERVAL_MS` | `500` | Chord stabilize interval |
+| `DLEVELDB_RPC_TIMEOUT_MS` | `10000` | Inter-node RPC timeout |
 
-控制台默认认为 API 在 `http://127.0.0.1:9000`，可用 `NEXT_PUBLIC_API_BASE_URL` 修改。
+The console talks to `http://127.0.0.1:9000` by default. Override it with `NEXT_PUBLIC_API_BASE_URL`.
 
-HTTP RPC 的规范前缀是 `/_dleveldb/`，例如 `GET /_dleveldb/cluster`、`POST /_dleveldb/kv/put`。同时也接受旧的 `/_s3dfs/` 路径。完整列表在 [docs/design.md](docs/design.md)。
+The canonical HTTP RPC prefix is `/_dleveldb/`, for example `GET /_dleveldb/cluster` and `POST /_dleveldb/kv/put`. Legacy `/_s3dfs/` paths are also accepted. The full list is in [docs/design.md](docs/design.md).
 
-## 已经实现和还没有做的
+## Performance
 
-已经可以：单机多分片、Chord 定位、默认 3 副本和多数写、主节点宕机后从副本读取、前缀扫描、Nest API 与 Next 控制台。
+Numbers below were measured on 16 Nov 2026 (Asia/Shanghai) with Bun 1.4.2, on a MacBook Pro (Apple M5 Pro, 15 cores, 48 GB, Apple SSD AP1024Z). They are single-host results, not a multi-machine network test. The 3-node case is three processes on the same machine. Reproduce with `pnpm --filter dleveldb bench`. Methodology and the same tables are in [docs/benchmarks.md](docs/benchmarks.md).
 
-还没有做：节点加入后的数据搬迁 / catch-up。新节点进环后，不会自动把历史 key 拉过来。主节点不可达时，写入会失败，本版本不会选举新的主副本。
+In-process library, one machine, effective N=1:
 
-## 依赖
+| Workload | Throughput | p50 | p99 |
+| --- | ---: | ---: | ---: |
+| put 100 B, `sync=off` | 39,200 ops/s | 24 µs | 37 µs |
+| get 100 B, `sync=off` | 92,510 ops/s | 10 µs | 18 µs |
+| put 1 KiB, `sync=off` | 36,745 ops/s | 26 µs | 38 µs |
+| get 1 KiB, `sync=off` | 85,459 ops/s | 12 µs | 18 µs |
+| put 16 KiB, `sync=off` | 19,434 ops/s | 46 µs | 191 µs |
+| get 16 KiB, `sync=off` | 60,736 ops/s | 15 µs | 24 µs |
+| put 1 KiB, `sync=on` (default) | 17,400 ops/s | 48 µs | 212 µs |
+| get 1 KiB, `sync=on` | 88,810 ops/s | 11 µs | 18 µs |
+| put 1 KiB, `sync=off`, 32 in flight | 99,002 ops/s | — | — |
+| put 1 KiB, `sync=off`, 4 vnodes | 35,771 ops/s | 27 µs | 40 µs |
+| get 1 KiB, `sync=off`, 4 vnodes | 41,845 ops/s | 22 µs | 51 µs |
+| scan 10,000 keys by prefix | 196 scans/s | 4.98 ms | 5.83 ms |
 
-当前使用的主要版本：
+Three localhost processes, N=3, W=2, over HTTP RPC, `sync=off`:
 
-- 节点运行时：Bun 1.4+
-- 安装与编译：Node.js 26、pnpm 9.15
+| Workload | Throughput | p50 | p99 |
+| --- | ---: | ---: | ---: |
+| HTTP put 1 KiB | 2,835 ops/s | 334 µs | 961 µs |
+| HTTP get 1 KiB | 11,592 ops/s | 82 µs | 231 µs |
+
+The default `DLEVELDB_SYNC=true` is safer: a crash is less likely to lose a recent write, and it is slower than `sync=off`.
+
+## Implemented and not yet done
+
+Already working: several shards on one machine, Chord placement, default 3 replicas with majority writes, reads from replicas after the primary is down, prefix scan, Nest API, and the Next console.
+
+Not done yet: data movement / catch-up after a node joins. A new node enters the ring and takes part in later writes, but it does not pull historical keys automatically. If the primary is unreachable, writes fail; this version does not elect a new primary.
+
+## Dependencies
+
+Current major versions:
+
+- Node runtime: Bun 1.4+
+- Install and compile: Node.js 26, pnpm 9.15
 - TypeScript 7.0.2
 - NestJS 12.5.0
-- Next.js 16.4.6、React 19.3.1
-- 本地引擎是 [`classic-level`](https://github.com/Level/classic-level)（官方 LevelDB 的 Node 绑定）
+- Next.js 16.4.6, React 19.3.1
+- The local engine is [`classic-level`](https://github.com/Level/classic-level) (the official LevelDB binding for Node)
 
 ## License
 

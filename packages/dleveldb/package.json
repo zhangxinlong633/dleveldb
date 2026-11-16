@@ -40,7 +40,8 @@
     "test:chord": "bun scripts/test-chord.mjs",
     "test:shards": "bun scripts/test-shards.mjs",
     "test:replicas": "bun scripts/test-replicas.mjs",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "bench": "bun scripts/bench.mjs"
   },
   "repository": {
     "type": "git",

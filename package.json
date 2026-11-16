@@ -19,7 +19,8 @@
     "test": "pnpm --filter dleveldb test",
     "test:chord": "pnpm --filter dleveldb test:chord",
     "test:shards": "pnpm --filter dleveldb test:shards",
-    "test:replicas": "pnpm --filter dleveldb test:replicas"
+    "test:replicas": "pnpm --filter dleveldb test:replicas",
+    "bench": "pnpm --filter dleveldb bench"
   },
   "devDependencies": {
     "typescript": "7.0.2"
