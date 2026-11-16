@@ -16,7 +16,7 @@
 
 ## 仓库结构
 
-这是一个 pnpm monorepo，需要 **Node.js 26+** 和 **pnpm 9+**。
+这是一个 pnpm monorepo。安装依赖和编译用 **pnpm 9+**（需要 **Node.js 26+**）。**节点进程用 Bun 1.4+ 运行**。核心库可以直接执行 TypeScript；Nest API 会先用 tsc 编译（需要装饰器元数据），再用 bun 启动。控制台仍是 Next.js。
 
 ```
 dleveldb/
@@ -105,10 +105,10 @@ const listed = await db.scan({ prefix: 'logs/2026/', maxKeys: 100 });
 await db.close();
 ```
 
-启动一个带控制台的节点：
+启动一个带控制台的节点（API 由 Bun 运行）：
 
 ```bash
-pnpm dev:api    # http://127.0.0.1:9000
+pnpm dev:api    # tsc watch + bun --watch，http://127.0.0.1:9000
 pnpm dev:web    # http://127.0.0.1:9001
 ```
 
@@ -116,6 +116,7 @@ pnpm dev:web    # http://127.0.0.1:9001
 
 ```bash
 DLEVELDB_DATA_DIR=./data DLEVELDB_NODE_ID=node1 DLEVELDB_PORT=9000 pnpm start
+# 等价于：bun packages/dleveldb/src/cli.ts
 ```
 
 第二台机器（或第二个进程）加入集群：
@@ -126,6 +127,7 @@ DLEVELDB_NODE_ID=node2 \
 DLEVELDB_PORT=9002 \
 DLEVELDB_PEERS=127.0.0.1:9000 \
 pnpm --filter @dleveldb/api start
+# 等价于先编译再执行：bun apps/api/dist/main.js
 ```
 
 ## 磁盘布局
@@ -176,7 +178,8 @@ HTTP RPC 的规范前缀是 `/_dleveldb/`，例如 `GET /_dleveldb/cluster`、`P
 
 当前使用的主要版本：
 
-- Node.js 26
+- 节点运行时：Bun 1.4+
+- 安装与编译：Node.js 26、pnpm 9.15
 - TypeScript 7.0.2
 - NestJS 12.5.0
 - Next.js 16.4.6、React 19.3.1

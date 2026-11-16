@@ -1,5 +1,4 @@
-import { Global, MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
-import { KvMiddleware } from './kv.middleware';
+import { Global, Module } from '@nestjs/common';
 import { KvService } from './kv.service';
 
 @Global()
@@ -7,8 +6,4 @@ import { KvService } from './kv.service';
   providers: [KvService],
   exports: [KvService],
 })
-export class KvModule implements NestModule {
-  configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(KvMiddleware).forRoutes('*');
-  }
-}
+export class KvModule {}

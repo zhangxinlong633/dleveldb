@@ -1,8 +1,10 @@
 import 'reflect-metadata';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { dispatchRpc, type BufferedRequest } from 'dleveldb';
+import { AppModule } from './app.module';
+import { KvService } from './kv/kv.service';
 
 type RawRequest = IncomingMessage & { rawBody?: Buffer };
 
@@ -32,6 +34,14 @@ async function bootstrap() {
       next();
     });
     void res;
+  });
+
+  const kv = app.get(KvService);
+  app.use(async (req: RawRequest, res: ServerResponse, next: () => void) => {
+    const handled = await dispatchRpc(kv.kv(), req as BufferedRequest, res);
+    if (!handled) {
+      next();
+    }
   });
 
   const port = Number(process.env.DLEVELDB_PORT ?? process.env.S3DFS_API_PORT ?? 9000);

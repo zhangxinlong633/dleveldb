@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "tsx watch src/main.ts",
+    "dev": "bun scripts/dev.mjs",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "start": "node dist/main.js",
-    "start:prod": "node dist/main.js",
+    "start": "bun dist/main.js",
+    "start:prod": "bun dist/main.js",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
@@ -21,7 +21,10 @@
     "@nestjs/cli": "12.0.13",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
-    "typescript": "7.0.2",
-    "tsx": "4.23.15"
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=26.0.0",
+    "bun": ">=1.4.0"
   }
 }

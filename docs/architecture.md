@@ -82,10 +82,12 @@ dleveldb 是一个**分布式的、以 LevelDB 为本地引擎的 KV 服务**。
 
 ## 进程怎么跑
 
+节点进程用 **Bun** 运行。核心库可以直接 `bun src/cli.ts`；Nest API 要先用 tsc 编译（Nest 的装饰器需要 TypeScript 发出的元数据），再用 `bun dist/main.js` 启动。`pnpm dev:api` 会自动编译并 watch。安装依赖仍用 pnpm，测试脚本也用 bun 执行。
+
 一个典型节点是：
 
-- `apps/api` 监听 `DLEVELDB_PORT`（默认 9000），启动时打开 `DLevelDB`，把 `/_dleveldb/*` 交给核心库的 `dispatchRpc`。
-- `apps/web` 默认在 9001，浏览器里看集群、做读写。它只是 API 的客户端。
+- `apps/api` 由 Bun 启动 Nest，监听 `DLEVELDB_PORT`（默认 9000），打开 `DLevelDB`，把 `/_dleveldb/*` 交给核心库的 `dispatchRpc`。
+- `apps/web` 默认在 9001，浏览器里看集群、做读写。它只是 API 的客户端，本身仍用 Next.js 的进程。
 
 多节点时，每个进程要有自己的 `DLEVELDB_NODE_ID`、`DLEVELDB_DATA_DIR`、`DLEVELDB_ADVERTISE_ADDR`，并用 `DLEVELDB_PEERS` 指向已经在环上的种子地址。
 
