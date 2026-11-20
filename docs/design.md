@@ -1,6 +1,10 @@
 # dleveldb 设计说明
 
-本文记录放置规则、磁盘格式、副本协议和 HTTP RPC。总体分层和读写路径见 [architecture.md](architecture.md)。
+| | |
+| --- | --- |
+| 读者 | 对接放置规则或 HTTP RPC 的人 |
+| 本文回答 | key 落在哪、磁盘上有什么、故障时 Put 由谁接受、对外有哪些路径 |
+| 相关 | 分层和读写路径见 [architecture.md](architecture.md) |
 
 ## 放置
 
@@ -37,9 +41,9 @@ value          size bytes
 - 写入先落主副本的 shard，再复制到偏好列表中的跟随者；跟随者把数据写到 `replicas/{主 vnode id}/`，而不是写进自己的主 shard。这样即使所有权日后仍指向原来的 vnode，副本也找得到。
 - 失败的 vnode 留在 known 集合里并标为 down，key 的所有者不变。
 - Chord 的 `findSuccessor`、stabilize、finger 只使用仍然活着的 vnode。
-- 主副本不可达时，Put / Delete 失败（`PRIMARY_UNAVAILABLE` 或写法定人数不足），不会在本版本里切换主。
+- 主副本不可达时，偏好列表里第一个还活着的节点在剩余副本达到写法定人数时接受 Put，数据写进该主 vnode 的副本库。
 - 读取顺序：本机所有 shard → 本机所有已发现的 replica 目录 → 其他节点的 `get-any` / `head-any`。
-- 加入环之后的范围迁移 / catch-up **尚未实现**。`repairOnJoin` 是占位，新节点不会自动拉取历史 key。
+- `repairOnJoin` 在加入环之后以及每个稳定周期运行。本机负责的 key 会从其他存活节点的主分片和副本里按较新的 `mtime` 补齐。
 
 ## HTTP RPC
 
@@ -54,6 +58,7 @@ value          size bytes
 | POST | `/_dleveldb/flush` | 刷新本地分片 |
 | POST | `/_dleveldb/compact` | 压缩本地 LevelDB |
 | POST | `/_dleveldb/kv/put` | 客户端写入（可被转发到主副本） |
+| POST | `/_dleveldb/kv/failover-put` | 主副本不可达时，由偏好列表中的协调节点写入副本库。`forwarded=true` 且本机不是协调节点时返回 `NOT_PRIMARY` |
 | GET | `/_dleveldb/kv/get?key=` | 客户端读取 |
 | GET | `/_dleveldb/kv/head?key=` | 只取元数据 |
 | POST | `/_dleveldb/kv/delete` | 客户端删除 |

@@ -111,9 +111,9 @@ export class LevelStore {
     return new LevelStore(dataDir, db, opts.sync ?? false);
   }
 
-  async put(key: string, value: Buffer): Promise<void> {
+  async put(key: string, value: Buffer, mtimeMs = Date.now()): Promise<void> {
     const existing = await this.peek(key);
-    await this.db.put(key, encodeRecord(value), { sync: this.sync });
+    await this.db.put(key, encodeRecord(value, mtimeMs), { sync: this.sync });
     this.puts += 1;
     if (this.sync) {
       this.fsyncs += 1;

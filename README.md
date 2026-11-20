@@ -14,7 +14,15 @@ Standalone LevelDB is reliable, but it holds a single copy and has no cross-mach
 2. **Placement.** A Chord DHT places every vnode on a 160-bit ring. Puts and gets hash the key with SHA-1 and look up the successor, so they do not broadcast to the whole cluster.
 3. **Replication.** A key is stored on 3 different physical machines by default. The write quorum W defaults to a majority. On a single machine the effective replica count becomes 1, so behavior matches local LevelDB.
 
-The API is ordinary KV: `Put`, `Get`, `Delete`, and prefix scan.
+The API is ordinary KV: `Put`, `Get`, `Delete`, and prefix scan. Object-storage clients, including the AWS CLI, do not connect here. They connect to an s3dfs API that uses this store as its index.
+
+## Documents
+
+| Document | Question |
+| --- | --- |
+| [Architecture](docs/architecture.md) | Process boundaries, the read/write path, and what survives one down machine. In Chinese |
+| [Design](docs/design.md) | Placement, on-disk format, and HTTP RPC. In Chinese |
+| [Benchmarks](docs/benchmarks.md) | The 16 Nov 2026 single-host measurements |
 
 ## Repository layout
 
@@ -70,7 +78,7 @@ A write looks like this:
 2. If the primary is not local, the request is forwarded to that node.
 3. The primary writes the value into its own LevelDB, then copies it to the other machines on the preference list (at most two more, by default).
 4. The Put succeeds only after the write quorum (majority by default) has acknowledged it.
-5. If the primary is unreachable, the write fails. This version **does not** fail over to a temporary primary, so two nodes cannot both accept writes as primary.
+5. If the primary process is unreachable, the first live node on the preference list accepts the write onto a majority of the remaining copies. A restarted primary copies newer keys back from those copies. Two partitions that both contain a quorum are still not allowed: a write needs W live copies from the preference list.
 
 Reads search every local primary shard and every local replica store first, then ask other nodes. After the primary dies, surviving replicas can still serve reads.
 
@@ -202,9 +210,7 @@ The default `DLEVELDB_SYNC=true` is safer: a crash is less likely to lose a rece
 
 ## Implemented and not yet done
 
-Already working: several shards on one machine, Chord placement, default 3 replicas with majority writes, reads from replicas after the primary is down, prefix scan, Nest API, and the Next console.
-
-Not done yet: data movement / catch-up after a node joins. A new node enters the ring and takes part in later writes, but it does not pull historical keys automatically. If the primary is unreachable, writes fail; this version does not elect a new primary.
+Already working: several shards on one machine, Chord placement, default 3 replicas with majority writes, reads from replicas after the primary is down, writes through a live replica when the primary is down and a majority remains, catch-up of newer keys after a node joins or returns, prefix scan, Nest API, and the Next console.
 
 ## Dependencies
 

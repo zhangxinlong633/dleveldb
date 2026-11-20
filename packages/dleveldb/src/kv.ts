@@ -18,7 +18,7 @@ import type {
 import { DLevelDBError } from './types.js';
 
 const REPAIR_NOTE =
-  '节点加入后的范围迁移 / catch-up repair 尚未实现。新节点不会自动从现有主副本搬移历史 key；当前仅维护环成员关系。';
+  '节点加入和周期稳定之后，会把本机负责的 key 从其他存活节点的主分片和副本里按较新的 mtime 补齐。主节点不可达时，偏好列表里第一个还活着的节点按写法定人数把数据写入副本。';
 
 export class DLevelDB {
   readonly config: DLevelDBConfig;
@@ -73,6 +73,7 @@ export class DLevelDB {
     }
     db.stabilizeTimer = setInterval(() => {
       void db.ring.stabilize();
+      void db.repairOnJoin();
     }, config.stabilizeIntervalMs);
     db.stabilizeTimer.unref();
     return db;
@@ -97,11 +98,18 @@ export class DLevelDB {
     if (!primary) {
       throw new DLevelDBError('PRIMARY_UNAVAILABLE', 'empty preference list');
     }
-    if (!this.isLocal(primary.address)) {
-      await this.transport.proxyPut(primary.address, key, value);
+    if (this.isLocal(primary.address)) {
+      await this.putAsPrimary(key, value, prefs);
       return;
     }
-    await this.putAsPrimary(key, value, prefs);
+    try {
+      await this.transport.proxyPut(primary.address, key, value);
+    } catch (err) {
+      if (!this.primaryUnreachable(err)) {
+        throw err;
+      }
+      await this.putWhilePrimaryDown(key, value, prefs);
+    }
   }
 
   async get(key: string): Promise<KVValue | null> {
@@ -247,7 +255,7 @@ export class DLevelDB {
       effectiveReplicas: this.effectiveN(),
       writeQuorum: this.writeQuorum(),
       usesLegacyLayout: this.usesLegacyLayout,
-      repair: { implemented: false, note: REPAIR_NOTE },
+      repair: { implemented: true, note: REPAIR_NOTE },
     };
   }
 
@@ -305,6 +313,48 @@ export class DLevelDB {
     }
   }
 
+  /** Primary is down. The first live preference node writes the value onto W live copies. */
+  async putWhilePrimaryDown(
+    key: string,
+    value: Buffer,
+    prefs = this.prefs(key),
+    forwarded = false,
+  ): Promise<void> {
+    const live: VnodeInfo[] = [];
+    for (const vnode of prefs) {
+      if (this.isLocal(vnode.address) || (await this.transport.ping(vnode.address))) {
+        live.push(vnode);
+      }
+    }
+    const w = this.writeQuorum();
+    if (live.length < w) {
+      throw new DLevelDBError(
+        'QUORUM_FAILED',
+        `write quorum ${w} not met while primary is down (live=${live.length})`,
+      );
+    }
+    const coordinator = live[0];
+    if (!coordinator) {
+      throw new DLevelDBError('PRIMARY_UNAVAILABLE', 'no live replica');
+    }
+    if (!this.isLocal(coordinator.address)) {
+      if (forwarded) {
+        throw new DLevelDBError('NOT_PRIMARY', 'not the failover coordinator');
+      }
+      await this.transport.proxyFailoverPut(coordinator.address, key, value);
+      return;
+    }
+    const owner = prefs[0]?.id;
+    if (!owner) {
+      throw new DLevelDBError('PRIMARY_UNAVAILABLE', 'empty preference list');
+    }
+    const results = await Promise.allSettled(live.map((vnode) => this.replicatePut(vnode, owner, key, value)));
+    const acks = results.filter((result) => result.status === 'fulfilled').length;
+    if (acks < w) {
+      throw new DLevelDBError('QUORUM_FAILED', `write quorum ${w} not met while primary is down (acks=${acks})`);
+    }
+  }
+
   async deleteAsPrimary(key: string, prefs = this.prefs(key)): Promise<boolean> {
     const primary = prefs[0];
     if (!primary || !this.shardById.has(primary.id)) {
@@ -331,6 +381,10 @@ export class DLevelDB {
 
   async replicateLocalPut(ownerVnodeId: string, key: string, value: Buffer): Promise<void> {
     const store = await this.replicas.open(ownerVnodeId);
+    const existing = await store.get(key);
+    if (existing && existing.value.equals(value)) {
+      return;
+    }
     await store.put(key, value);
     if (this.effectiveN() > 1) {
       await store.flush();
@@ -502,6 +556,7 @@ export class DLevelDB {
         try {
           await this.ring.join(peer);
           await this.ring.stabilize();
+          void this.repairOnJoin();
           this.joining = false;
           return;
         } catch {
@@ -517,8 +572,64 @@ export class DLevelDB {
     }
   }
 
-  /** 钩子：成员变化后的 catch-up / 范围迁移。本轮只占位，不假装已经完成。 */
+  /** Copy keys this node is responsible for from any live peer, keeping the newer mtime. */
   async repairOnJoin(): Promise<void> {
-    return;
+    if (this.repairing || this.closed) {
+      return;
+    }
+    this.repairing = true;
+    try {
+      const vnodeIds = this.ring.sortedKnown().map((vnode) => vnode.id);
+      for (const addr of this.scanTargets()) {
+        if (this.isLocal(addr) || !(await this.transport.ping(addr))) {
+          continue;
+        }
+        try {
+          await this.repairFrom(addr, vnodeIds);
+        } catch {
+          // This peer can be down. Another live peer still has the copies.
+        }
+      }
+    } finally {
+      this.repairing = false;
+    }
+  }
+
+  private repairing = false;
+
+  private primaryUnreachable(err: unknown): boolean {
+    return err instanceof DLevelDBError && (err.code === 'PRIMARY_UNAVAILABLE' || err.code === 'TIMEOUT');
+  }
+
+  private async repairFrom(addr: string, vnodeIds: string[]): Promise<void> {
+    const pages = [
+      await this.transport.proxyScan(addr, { maxKeys: 10_000 }),
+      vnodeIds.length > 0 ? await this.transport.proxyScanReplica(addr, vnodeIds, { maxKeys: 10_000 }) : { objects: [], truncated: false },
+    ];
+    for (const page of pages) {
+      for (const entry of page.objects) {
+        const prefs = this.prefs(entry.key);
+        const owner = prefs[0];
+        if (!owner || !prefs.some((vnode) => this.isLocal(vnode.address))) {
+          continue;
+        }
+        const remote = await this.transport.proxyGetAny(addr, entry.key);
+        if (!remote) {
+          continue;
+        }
+        const local = await this.localAnyGet(entry.key);
+        if (local && local.mtimeMs >= remote.mtimeMs) {
+          continue;
+        }
+        if (this.ownsPrimary(owner.id)) {
+          const shard = this.shardById.get(owner.id);
+          if (shard) {
+            await shard.store.put(entry.key, remote.value, remote.mtimeMs);
+          }
+        } else {
+          await this.replicateLocalPut(owner.id, entry.key, remote.value);
+        }
+      }
+    }
   }
 }

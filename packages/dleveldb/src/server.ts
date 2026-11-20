@@ -155,6 +155,17 @@ export async function dispatchRpc(db: DLevelDB, req: BufferedRequest, res: Serve
       sendJson(res, 200, { ok: true });
       return true;
     }
+    if (pathname === '/kv/failover-put' && method === 'POST') {
+      const key = requestKey(req, url);
+      if (!key) {
+        sendJson(res, 400, { error: 'missing x-dleveldb-key' });
+        return true;
+      }
+      const value = await readBody(req);
+      await db.putWhilePrimaryDown(key, value, undefined, true);
+      sendJson(res, 200, { ok: true });
+      return true;
+    }
     if ((pathname === '/kv/get' || pathname === '/kv/head') && method === 'GET') {
       const key = url.searchParams.get('key') ?? '';
       if (!key) {

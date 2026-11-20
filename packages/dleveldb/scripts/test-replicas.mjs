@@ -1,7 +1,7 @@
 /**
  * 多进程副本测试：三个独立进程、不同 data dir 和端口，通过 DLEVELDB_PEERS 加入环，
- * N=3、W=2。杀掉主副本所在进程后，对象仍可从剩余节点读取；对同一 key 的写入应失败
- *（本轮不实现抢主写入，避免脑裂）。
+ * N=3、W=2。杀掉主副本所在进程后，对象仍可从剩余节点读取。
+ * 剩余节点达到写法定人数时可以继续写入。主节点带着原数据目录回来后，会把较新的值补回自己的分片。
  *
  *   npm run build
  *   npm run test:replicas
@@ -94,15 +94,27 @@ async function runHarness() {
     assert(got2 && got2.equals(value), `readable from ${survivors[1].nodeId} after primary is down`);
 
     let writeFailed = false;
+    const next = Buffer.from('written-while-primary-down');
     try {
-      await put(survivors[0], key, Buffer.from('should-not-commit'));
-    } catch {
+      await put(survivors[0], key, next);
+    } catch (err) {
       writeFailed = true;
+      log(String(err));
     }
-    assert(writeFailed, 'write should fail when primary is unreachable (no racy failover)');
+    assert(!writeFailed, 'write should succeed on a survivor while the primary is down');
+    const updated = await get(survivors[1], key);
+    assert(updated && updated.equals(next), 'the other survivor must read the write accepted while the primary is down');
 
-    const stale = await get(survivors[0], key);
-    assert(stale && stale.equals(value), 'failed write must not change remaining replicas');
+    const restarted = await startNode({
+      nodeId: primary.nodeId,
+      port: primary.port,
+      dataDir: primary.dataDir,
+      peers: `127.0.0.1:${survivors[0].port}`,
+    });
+    children.push(restarted);
+    await sleep(1500);
+    const caughtUp = await get(primary, key);
+    assert(caughtUp && caughtUp.equals(next), 'restarted primary must catch up the write made while it was down');
 
     log('ok replicas', { dir: base, primary: primaryId, survivors: survivors.map((s) => s.nodeId) });
   } catch (err) {
