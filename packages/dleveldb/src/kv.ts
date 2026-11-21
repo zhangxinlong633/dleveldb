@@ -131,7 +131,14 @@ export class DLevelDB {
       throw new DLevelDBError('PRIMARY_UNAVAILABLE', 'empty preference list');
     }
     if (!this.isLocal(primary.address)) {
-      return this.transport.proxyDelete(primary.address, key);
+      try {
+        return await this.transport.proxyDelete(primary.address, key);
+      } catch (err) {
+        if (!this.primaryUnreachable(err)) {
+          throw err;
+        }
+        return this.deleteWhilePrimaryDown(key, prefs);
+      }
     }
     return this.deleteAsPrimary(key, prefs);
   }
@@ -377,6 +384,41 @@ export class DLevelDB {
       throw new DLevelDBError('QUORUM_FAILED', `delete quorum ${w} not met (acks=${acks}, n=${n})`);
     }
     return deleted;
+  }
+
+  /** Primary is down. The first live preference node deletes the key on W live copies. */
+  async deleteWhilePrimaryDown(key: string, prefs = this.prefs(key), forwarded = false): Promise<boolean> {
+    const live: VnodeInfo[] = [];
+    for (const vnode of prefs) {
+      if (this.isLocal(vnode.address) || (await this.transport.ping(vnode.address))) {
+        live.push(vnode);
+      }
+    }
+    const w = this.writeQuorum();
+    if (live.length < w) {
+      throw new DLevelDBError('QUORUM_FAILED', `delete quorum ${w} not met while primary is down (live=${live.length})`);
+    }
+    const coordinator = live[0];
+    if (!coordinator) {
+      throw new DLevelDBError('PRIMARY_UNAVAILABLE', 'no live replica');
+    }
+    if (!this.isLocal(coordinator.address)) {
+      if (forwarded) {
+        throw new DLevelDBError('NOT_PRIMARY', 'not the failover coordinator');
+      }
+      await this.transport.proxyFailoverDelete(coordinator.address, key);
+      return true;
+    }
+    const owner = prefs[0]?.id;
+    if (!owner) {
+      throw new DLevelDBError('PRIMARY_UNAVAILABLE', 'empty preference list');
+    }
+    const results = await Promise.allSettled(live.map((vnode) => this.replicateDelete(vnode, owner, key)));
+    const acks = results.filter((result) => result.status === 'fulfilled').length;
+    if (acks < w) {
+      throw new DLevelDBError('QUORUM_FAILED', `delete quorum ${w} not met while primary is down (acks=${acks})`);
+    }
+    return true;
   }
 
   async replicateLocalPut(ownerVnodeId: string, key: string, value: Buffer): Promise<void> {

@@ -166,6 +166,16 @@ export async function dispatchRpc(db: DLevelDB, req: BufferedRequest, res: Serve
       sendJson(res, 200, { ok: true });
       return true;
     }
+    if (pathname === '/kv/failover-delete' && method === 'POST') {
+      const body = parseJsonBody<{ key?: string }>(await readBody(req));
+      if (!body.key) {
+        sendJson(res, 400, { error: 'missing key' });
+        return true;
+      }
+      await db.deleteWhilePrimaryDown(body.key, undefined, true);
+      sendJson(res, 200, { deleted: true });
+      return true;
+    }
     if ((pathname === '/kv/get' || pathname === '/kv/head') && method === 'GET') {
       const key = url.searchParams.get('key') ?? '';
       if (!key) {

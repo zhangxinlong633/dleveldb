@@ -146,6 +146,10 @@ export class HttpTransport implements ChordTransport {
     await this.sendBytes(address, '/_dleveldb/kv/failover-put', key, value);
   }
 
+  async proxyFailoverDelete(address: string, key: string): Promise<void> {
+    await this.json(address, '/_dleveldb/kv/failover-delete', { method: 'POST', body: { key } });
+  }
+
   async replicatePut(address: string, ownerVnodeId: string, key: string, value: Buffer): Promise<void> {
     await this.sendBytes(address, '/_dleveldb/replicate', key, value, { 'x-dleveldb-vnode': ownerVnodeId, 'x-s3dfs-vnode': ownerVnodeId });
   }
